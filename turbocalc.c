@@ -61,6 +61,14 @@ static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
     return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
 }
 
+// Static inline function to read the x86 Time-Stamp Counter (TSC)
+static inline uint64_t get_cycles(void) {
+    uint32_t lo, hi;
+    // rdtscp forces serialization, ensuring all previous instructions have executed
+    __asm__ __volatile__ ("rdtscp" : "=a" (lo), "=d" (hi) :: "%rcx");
+    return ((uint64_t)hi << 32) | lo;
+}
+
 // Heavy workload to force CPU core to hit SISD max turbo boost
 static inline void sisd_workload(uint64_t iterations) {
 #if defined(__x86_64__)
@@ -201,33 +209,53 @@ void* thread_benchmark(void* arg) {
     pe.exclude_kernel = 1;
     pe.exclude_hv     = 1;
 
+#if defined(__x86_64__)
+    bool is_x86 = true;
+#else
+    bool is_x86 = false;
+#endif
+
+    bool has_pmu = true;
     int fd = perf_event_open(&pe, 0, data->cpu_id, -1, 0);
     if (fd == -1) {
-        pthread_exit(NULL);
+        if (is_x86) {
+            has_pmu = false;
+        } else {
+            pthread_exit(NULL);
+        }
     }
 
     (*data->load_function)(data->warmup_iterations);
 
     struct   timespec start_time, end_time;
-    uint64_t total_cycles;
+    uint64_t start_cycles, end_cycles, total_cycles;
 
-    ioctl(fd, PERF_EVENT_IOC_RESET,   0);
-    ioctl(fd, PERF_EVENT_IOC_ENABLE,  0);
+    if (has_pmu) {
+        ioctl(fd, PERF_EVENT_IOC_RESET,   0);
+        ioctl(fd, PERF_EVENT_IOC_ENABLE,  0);
+    } else {
+        start_cycles = get_cycles();
+    }
+
     clock_gettime(CLOCK_MONOTONIC, &start_time);
-
     (*data->load_function)(data->total_iterations);
 
     clock_gettime(CLOCK_MONOTONIC, &end_time);
-    ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-
-    if (read(fd, &total_cycles, sizeof(uint64_t)) == -1) {
-        close(fd);
-        pthread_exit(NULL);
-    }
-    close(fd);
 
     double elapsed_seconds = (end_time.tv_sec - start_time.tv_sec) +
                              (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
+
+    if (has_pmu) {
+        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+        if (read(fd, &total_cycles, sizeof(uint64_t)) == -1) {
+            close(fd);
+            pthread_exit(NULL);
+        }
+        close(fd);
+    } else {
+        end_cycles = get_cycles();
+        total_cycles = end_cycles - start_cycles;
+    }
 
     data->calculated_ghz = ((double)total_cycles / elapsed_seconds) / 1e9;
     data->sysfs_ghz = get_sysfs_cpu_freq_ghz(data->cpu_id);
