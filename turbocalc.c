@@ -117,11 +117,11 @@ int check_perf_permissions() {
     if (fscanf(fp, "%d", &paranoid_level) == 1) {
         fclose(fp);
         if (verbose) { printf("[+] System perf_event_paranoid level is: %d\n", paranoid_level); }
-        
+
         if (paranoid_level > 1 && getuid() != 0) {
-            fprintf(stderr, "[X] ERROR: Your current settings will block this program.\n");
-            fprintf(stderr, "    To fix this, run: sudo sysctl -w kernel.perf_event_paranoid=0\n");
-            fprintf(stderr, "    Or run this specific program with sudo.\n\n");
+            fprintf(stderr, "[X] ERROR: Your current settings will block this program.\n"
+                            "    To fix this, run: sudo sysctl -w kernel.perf_event_paranoid=0\n"
+                            "    Or run this specific program with sudo.\n\n");
             return -1;
         }
     } else {
@@ -136,7 +136,7 @@ double get_sysfs_cpu_freq_ghz(int cpu_id) {
     snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu_id);
 
     FILE *fp = fopen(path, "r");
-    if (!fp) return -1.0; 
+    if (!fp) return -1.0;
 
     unsigned long long freq_khz = 0;
     if (fscanf(fp, "%llu", &freq_khz) != 1) {
@@ -147,20 +147,18 @@ double get_sysfs_cpu_freq_ghz(int cpu_id) {
     return (double)freq_khz / 1e6; // Convert kHz to GHz
 }
 
-// Calibration wrapper
-double apply_bclk_calibration(thread_data_t data) {
+// Compensate for the physical BCLK spread-spectrum drop
+// Most modern server motherboards under stress fluctuate around 99.58 MHz instead of 100.00 MHz
+double apply_bclk_compensation(thread_data_t data) {
     if (data.sysfs_ghz <= 0.0) {
         return data.calculated_ghz;
     }
 
-    // Compensate for the physical BCLK spread-spectrum drop
-    // Most modern server motherboards under stress fluctuate around 99.58 MHz instead of 100.00 MHz
     double bclk_variance = data.sysfs_ghz / data.calculated_ghz;
-    
+
     // If the difference is minor (within a realistic 2% margin), calibrate it out
-    //if (bclk_variance >= 0.98 && bclk_variance <= 1.02) {
     if (bclk_variance >= 1.002 && bclk_variance <= 1.005) {
-        constexpr double bclk_correction_factor = 100.0 / 99.58; 
+        constexpr double bclk_correction_factor = 100.0 / 99.58;
         return data.calculated_ghz * bclk_correction_factor;
     }
 
@@ -181,10 +179,10 @@ void print_usage() {
 	   );
 }
 
-// Thread function executed on each CPU core simultaneously
+// Thread function executed on each CPU core simultaineously
 void* thread_benchmark(void* arg) {
     thread_data_t* data = (thread_data_t*)arg;
-    
+
     // Hard pin the thread to its designated CPU core
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
@@ -228,12 +226,12 @@ void* thread_benchmark(void* arg) {
     }
     close(fd);
 
-    double elapsed_seconds = (end_time.tv_sec - start_time.tv_sec) + 
+    double elapsed_seconds = (end_time.tv_sec - start_time.tv_sec) +
                              (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
-    
+
     data->calculated_ghz = ((double)total_cycles / elapsed_seconds) / 1e9;
     data->sysfs_ghz = get_sysfs_cpu_freq_ghz(data->cpu_id);
-    
+
     pthread_exit(NULL);
 }
 
@@ -270,8 +268,8 @@ int main(int argc, char *argv[]) {
             }
             case 'f': {
                 if (!is_valid_format(optarg)) {
-                    fprintf(stderr, "Error: Invalid value '%s' for mode.\n", optarg);
-                    fprintf(stderr, "Allowed values are: csv, txt\n");
+                    fprintf(stderr, "Error: Invalid value '%s' for format.\n"
+                                    "Allowed values are: csv, txt\n", optarg);
                     return 1;
                 }
                 if (strcmp(optarg, "csv") == 0) {
@@ -351,7 +349,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         pthread_join(single_thread, NULL);
-        if (compensate) { single_data.calculated_ghz = apply_bclk_calibration(single_data); }
+        if (compensate) { single_data.calculated_ghz = apply_bclk_compensation(single_data); }
         if (verbose) { printf("  -> Single-Core run result: %.3f GHz\n", single_data.calculated_ghz); }
         if (single_data.calculated_ghz > max_single_ghz) {
             max_single_ghz = single_data.calculated_ghz;
@@ -379,7 +377,7 @@ int main(int argc, char *argv[]) {
             double sum_active = 0.0;
             for (int i = 0; i < active_count; i++) {
                 pthread_join(threads[i], NULL);
-                if (compensate) { t_data[i].calculated_ghz = apply_bclk_calibration(t_data[i]); }
+                if (compensate) { t_data[i].calculated_ghz = apply_bclk_compensation(t_data[i]); }
                 sum_active += t_data[i].calculated_ghz;
             }
             double avg_active = sum_active / active_count;
@@ -403,8 +401,8 @@ int main(int argc, char *argv[]) {
 
     // Parallel multi-core turbo test loop
     if (verbose) {
-        printf("\n=== Stage 2: Testing multi-core turbo (%d runs) ===\n", num_runs);
-        printf("[+] Launching parallel workload (%luM iterations per core)...\n", iterations_input);
+        printf("\n=== Stage 2: Testing multi-core turbo (%d runs) ===\n"
+               "[+] Launching parallel workload (%luM iterations per core)...\n", num_runs, iterations_input);
     }
 
     for (int r = 1; r <= num_runs; r++) {
@@ -426,7 +424,7 @@ int main(int argc, char *argv[]) {
         double run_sum = 0.0;
         for (int i = 0; i < num_cores; i++) {
             pthread_join(threads[i], NULL);
-            if (compensate) { t_data[i].calculated_ghz = apply_bclk_calibration(t_data[i]); }
+            if (compensate) { t_data[i].calculated_ghz = apply_bclk_compensation(t_data[i]); }
             run_sum += t_data[i].calculated_ghz;
             if (t_data[i].calculated_ghz > max_multi_ghz) {
                 max_multi_ghz = t_data[i].calculated_ghz;
@@ -436,8 +434,7 @@ int main(int argc, char *argv[]) {
         if (verbose) { printf("  -> Multi-Core run #%d average: %.3f GHz\n", r, run_avg); }
     }
 
-    // Print out report
-    
+    // Print out the report
     double sum_ghz = 0.0;
     int    successful_measures = 0;
     char   max_single[6]       = "[N/A]";
@@ -446,8 +443,8 @@ int main(int argc, char *argv[]) {
     char   drop_multi[6]       = "[N/A]";
     char   max_cores[11]       = "[N/A]";
 
-    if (verbose) { printf("\n=== Final benchmark summary ===\n"); }
-    if (verbose) { printf("\nParallel execution breakdown:\n"); }
+    if (verbose) { printf("\n=== Final benchmark summary ===\n"
+                          "\nParallel execution breakdown:\n"); }
     for (int i = 0; i < num_cores; i++) {
         if (t_data[i].calculated_ghz > 0.0) {
             if (verbose) { printf("  -> CPU %d: %.3f GHz\n", i, t_data[i].calculated_ghz); }
@@ -473,7 +470,7 @@ int main(int argc, char *argv[]) {
     if (successful_measures > 0) {
         snprintf(max_multi, sizeof(max_multi), "%.3f", max_multi_ghz);
         snprintf(avg_multi, sizeof(avg_multi), "%.3f", sum_ghz / successful_measures);
-        
+
         if (single_data.calculated_ghz > 0.0) {
             double drop = single_data.calculated_ghz - (sum_ghz / successful_measures);
             snprintf(drop_multi, sizeof(drop_multi), "%.3f", drop);
