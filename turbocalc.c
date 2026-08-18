@@ -22,51 +22,58 @@
 
 bool verbose = false;
 
-static const char *formats[] = { "csv", "txt", NULL };
+// Workload function pointer type
+typedef void (*WorkloadPtr)(uint64_t iterations);
 
-static char *csv_fmt = "#MAX_SINGLE_GHZ,#MAX_MULTI_GHZ,#AVG_MULTI_GHZ,#MULTI_DROP_GHZ,#MAX_SCT_CORES\n"
-                       "%s,%s,%s,%s,%s\n";
-
-static char *txt_fmt = "Peak single-core turbo (CPU 0)  : %s GHz\n"
-                       "Peak multi-core turbo (highest) : %s GHz\n"
-                       "Average multi-core frequency    : %s GHz\n"
-                       "Multi-core thermal/power drop   : %s GHz\n"
-                       "Max parallel s-c turbo cores    : %s\n";
-
-// Structure passed to each worker thread
+// Structure to map a string to a function pointer
 typedef struct {
-    int      cpu_id;
-    uint64_t total_iterations;
-    uint64_t warmup_iterations;
-    double   calculated_ghz;
-    double   sysfs_ghz;
-    void     (*load_function)(uint64_t);
-} thread_data_t;
+    const char *name;
+    WorkloadPtr func;
+    bool deterministic;
+} Workload;
 
-// Check if provided output format is allowed
-bool is_valid_format(const char *val) {
-    int i = 0;
-    while (formats[i] != NULL) {
-        if (strcmp(formats[i], val) == 0) {
-            return true;
-        }
-        i++;
-    }
-    return false;
-}
+// 
+void deterministic_sisd_workload(uint64_t total_instructions) {
+    // We unroll the loop by 10 to hide the branch overhead (dec + jnz).
+    // The OoO engine will execute the loop control in parallel, 
+    // leaving the add/xor chain as the sole timing bottleneck.
+    uint64_t loops = total_instructions / 10;
+    
+    // val carries the dependency chain. 
+    // toggle_val is a constant used to mutate val.
+    uint64_t val = 0;
+    uint64_t toggle_val = 1;
 
-// System call wrapper for perf_event_open
-static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
-                            int cpu, int group_fd, unsigned long flags) {
-    return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
-}
+    // Inline assembly block
+    __asm__ volatile (
+        ".align 16\n"                   // Align loop target to 16-byte boundary for fetch efficiency
+        "1:\n\t"
+        
+        // --- Dependency Chain Begins ---
+        "add %[toggle], %[val]\n\t"     // val = 0 + 1 = 1      (1 cycle latency)
+        "xor %[toggle], %[val]\n\t"     // val = 1 ^ 1 = 0      (1 cycle latency)
+        "add %[toggle], %[val]\n\t"     // val = 0 + 1 = 1      (1 cycle latency)
+        "xor %[toggle], %[val]\n\t"     // val = 1 ^ 1 = 0      (1 cycle latency)
+        "add %[toggle], %[val]\n\t"     // val = 0 + 1 = 1      (1 cycle latency)
+        "xor %[toggle], %[val]\n\t"     // val = 1 ^ 1 = 0      (1 cycle latency)
+        "add %[toggle], %[val]\n\t"     // val = 0 + 1 = 1      (1 cycle latency)
+        "xor %[toggle], %[val]\n\t"     // val = 1 ^ 1 = 0      (1 cycle latency)
+        "add %[toggle], %[val]\n\t"     // val = 0 + 1 = 1      (1 cycle latency)
+        "xor %[toggle], %[val]\n\t"     // val = 1 ^ 1 = 0      (1 cycle latency)
+        // --- Dependency Chain Ends ---
 
-// Static inline function to read the x86 Time-Stamp Counter (TSC)
-static inline uint64_t get_cycles(void) {
-    uint32_t lo, hi;
-    // rdtscp forces serialization, ensuring all previous instructions have executed
-    __asm__ __volatile__ ("rdtscp" : "=a" (lo), "=d" (hi) :: "%rcx");
-    return ((uint64_t)hi << 32) | lo;
+        "dec %[loops]\n\t"              // Decrement loop counter
+        "jnz 1b\n\t"                    // Jump back to '1' if loops != 0
+        
+        // Output operands: val and loops are read/write (+r)
+        : [val] "+r" (val), [loops] "+r" (loops)
+        
+        // Input operands: toggle is read-only (r)
+        : [toggle] "r" (toggle_val)
+        
+        // Clobbers: "cc" informs the compiler that the condition codes (flags) are modified
+        : "cc"
+    );
 }
 
 // Heavy workload to force CPU core to hit SISD max turbo boost
@@ -111,6 +118,108 @@ static inline void sisd_workload(uint64_t iterations) {
         d4 ^= d3;
     }
 #endif
+}
+
+// Workload function lookup table
+Workload workloads[] = {
+    {"sisd", sisd_workload, false},
+    {"d_sisd", deterministic_sisd_workload, true},
+    {NULL, NULL, false}
+};
+
+static const char *formats[] = { "csv", "txt", NULL };
+
+static char *csv_fmt = "#MAX_SINGLE_GHZ,#MAX_MULTI_GHZ,#AVG_MULTI_GHZ,#MULTI_DROP_GHZ,#MAX_SCT_CORES\n"
+                       "%s,%s,%s,%s,%s\n";
+
+static char *txt_fmt = "Peak single-core turbo (CPU 0)  : %s GHz\n"
+                       "Peak multi-core turbo (highest) : %s GHz\n"
+                       "Average multi-core frequency    : %s GHz\n"
+                       "Multi-core thermal/power drop   : %s GHz\n"
+                       "Max parallel s-c turbo cores    : %s\n";
+
+// Structure passed to each worker thread
+typedef struct {
+    int      cpu_id;
+    uint64_t total_iterations;
+    uint64_t warmup_iterations;
+    double   calculated_ghz;
+    double   sysfs_ghz;
+//    void     (*load_function)(uint64_t);
+    char     *load_function;
+} thread_data_t;
+
+// Check if provided output format is allowed
+bool is_valid_format(const char *format) {
+    int i = 0;
+    while (formats[i] != NULL) {
+        if (strcmp(formats[i], format) == 0) {
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+// List workloads
+void list_workloads() {
+    int i = 0;
+    while (workloads[i].name != NULL) {
+        printf("%s\n", workloads[i].name);
+        i++;
+    }
+    return;
+}
+
+// Check if provided workload name is allowed
+bool is_valid_workload(const char *fname) {
+    int i = 0;
+    while (workloads[i].name != NULL) {
+        if (strcmp(workloads[i].name, fname) == 0) {
+            return true;
+        }
+        i++;
+    }
+    return false;
+}
+
+// Check if provided workload is deterministic
+bool is_deterministic_workload(const char *fname) {
+    int i = 0;
+    while (workloads[i].name != NULL) {
+        if (strcmp(workloads[i].name, fname) == 0) {
+            return workloads[i].deterministic;
+        }
+        i++;
+    }
+    return false;
+}
+
+// Call workload function by name string
+void run_workload(const char *fname, uint64_t iterations) {
+    int i = 0;
+    while (workloads[i].name != NULL) {
+        if (strcmp(workloads[i].name, fname) == 0) {
+            workloads[i].func(iterations);
+            return;
+        }
+        i++;
+    }
+    printf("Workload '%s' not found.\n", fname);
+}
+
+// System call wrapper for perf_event_open
+static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
+                            int cpu, int group_fd, unsigned long flags) {
+    return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
+}
+
+// Static inline function to read the x86 Time-Stamp Counter (TSC)
+static inline uint64_t get_cycles(void) {
+    uint32_t lo, hi;
+    // rdtscp forces serialization, ensuring all previous instructions have executed
+    __asm__ __volatile__ ("rdtscp" : "=a" (lo), "=d" (hi) :: "%rcx");
+    return ((uint64_t)hi << 32) | lo;
 }
 
 // Verifies system permissions before running the main logic
@@ -179,10 +288,12 @@ void print_usage() {
            "  -c, --compensate       Compensate result for the physical BCLK spread-spectrum drop\n"
            "  -f, --format <csv|txt> Output format (default: txt)\n"
            "  -i, --iterations <M>   Millions of iterations per thread (default: 200)\n"
+           "  -l, --list_workloads   List available workload types\n"
            "  -r, --runs <count>     Number of test runs (default: 5)\n"
            "  -m, --max_tcores       Find the max count of single-core turbo capable cores (basic)\n"
            "  -M, --max_tcores_full  Find the max count of single-core turbo capable cores (thorough)\n"
            "  -v, --verbose          Display more details (only works for txt format)\n"
+           "  -w, --workload         Workload type (default: sisd)\n"
            "  -h, --help             Display this help message\n"
 	   );
 }
@@ -225,7 +336,7 @@ void* thread_benchmark(void* arg) {
         }
     }
 
-    (*data->load_function)(data->warmup_iterations);
+    run_workload(data->load_function, data->warmup_iterations);
 
     struct   timespec start_time, end_time;
     uint64_t start_cycles, end_cycles, total_cycles;
@@ -238,8 +349,7 @@ void* thread_benchmark(void* arg) {
     }
 
     clock_gettime(CLOCK_MONOTONIC, &start_time);
-    (*data->load_function)(data->total_iterations);
-
+    run_workload(data->load_function, data->total_iterations);
     clock_gettime(CLOCK_MONOTONIC, &end_time);
 
     double elapsed_seconds = (end_time.tv_sec - start_time.tv_sec) +
@@ -257,7 +367,11 @@ void* thread_benchmark(void* arg) {
         total_cycles = end_cycles - start_cycles;
     }
 
-    data->calculated_ghz = ((double)total_cycles / elapsed_seconds) / 1e9;
+    if (is_deterministic_workload(data->load_function)) {
+        data->calculated_ghz = ((double)data->total_iterations / elapsed_seconds) / 1e9;
+    } else {
+        data->calculated_ghz = ((double)total_cycles / elapsed_seconds) / 1e9;
+    }
     data->sysfs_ghz = get_sysfs_cpu_freq_ghz(data->cpu_id);
 
     pthread_exit(NULL);
@@ -270,25 +384,28 @@ int main(int argc, char *argv[]) {
     bool     compensate             = false;   // Default: do not apply BCLK spread-spectrum drop compensation
     bool     max_tcores             = false;   // Default: skip basic test for max parallel sc turbo cores
     bool     max_tcores_full        = false;   // Default: skip thorough test for max parallel sc turbo cores
+    char    *workload               = "sisd";
 
     double   max_multi_ghz          = 0.0;
     double   max_single_ghz         = 0.0;
     int      max_simultaneous_cores = 1;
 
     static struct option const long_options[] = {
-        {"compensate",   no_argument,       NULL, 'c'},
-        {"format",       required_argument, NULL, 'f'},
-        {"iterations",   required_argument, NULL, 'i'},
-        {"max_tcores",   no_argument,       NULL, 'm'},
-        {"max_tcores_f", no_argument,       NULL, 'M'},
-        {"runs",         required_argument, NULL, 'r'},
-        {"verbose",      no_argument,       NULL, 'v'},
-        {"help",         no_argument,       NULL, 'h'},
-        {NULL,           0,                 NULL, 0}
+        {"compensate",     no_argument,       NULL, 'c'},
+        {"format",         required_argument, NULL, 'f'},
+        {"iterations",     required_argument, NULL, 'i'},
+        {"list_workloads", no_argument,       NULL, 'l'},
+        {"max_tcores",     no_argument,       NULL, 'm'},
+        {"max_tcores_f",   no_argument,       NULL, 'M'},
+        {"runs",           required_argument, NULL, 'r'},
+        {"verbose",        no_argument,       NULL, 'v'},
+        {"workload",       required_argument, NULL, 'w'},
+        {"help",           no_argument,       NULL, 'h'},
+        {NULL,             0,                 NULL, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "f:i:r:chmMv", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:i:r:w:chlmMv", long_options, NULL)) != -1) {
         switch (opt) {
             case 'c': {
                 compensate = true;
@@ -315,6 +432,10 @@ int main(int argc, char *argv[]) {
                 iterations_input = (uint64_t)val;
                 break;
             }
+            case 'l': {
+                list_workloads();
+                return 0;
+            }
             case 'r': {
                 int val = atoi(optarg);
                 if (val <= 0) {
@@ -337,6 +458,14 @@ int main(int argc, char *argv[]) {
                 if (strcmp(out_format, txt_fmt) == 0) {
                     verbose = true;
                 }
+                break;
+            }
+            case 'w': {
+                if (!is_valid_workload(optarg)) {
+                    fprintf(stderr, "Error: Invalid value '%s' for workload.\n", optarg);
+                    return 1;
+                }
+                workload = optarg;
                 break;
             }
             case 'h':
@@ -370,7 +499,7 @@ int main(int argc, char *argv[]) {
 	single_data.warmup_iterations = warmup_iterations;
        	single_data.calculated_ghz = 0.0;
        	single_data.sysfs_ghz = 0.0;
-        single_data.load_function = sisd_workload;
+        single_data.load_function = workload;
         pthread_t single_thread;
         if (pthread_create(&single_thread, NULL, thread_benchmark, &single_data) != 0) {
             fprintf(stderr, "[X] Single-core thread creation failed\n");
@@ -398,7 +527,7 @@ int main(int argc, char *argv[]) {
                 t_data[i].warmup_iterations = warmup_iterations;
                 t_data[i].calculated_ghz = 0.0;
                 t_data[i].sysfs_ghz = 0.0;
-                t_data[i].load_function = sisd_workload;
+                t_data[i].load_function = workload;
                 pthread_create(&threads[i], NULL, thread_benchmark, &t_data[i]);
             }
 
@@ -440,7 +569,7 @@ int main(int argc, char *argv[]) {
             t_data[i].warmup_iterations = warmup_iterations;
             t_data[i].calculated_ghz = 0.0;
             t_data[i].sysfs_ghz = 0.0;
-            t_data[i].load_function = sisd_workload;
+            t_data[i].load_function = workload;
             if (pthread_create(&threads[i], NULL, thread_benchmark, &t_data[i]) != 0) {
                 fprintf(stderr, "[X] Thread creation failed for core %d\n", i);
                 free(threads);
