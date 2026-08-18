@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O3 -lpthread
+CFLAGS = -std=gnu2x -Wall -Wextra -O3 -lpthread
 CFLAGS_PROD = -static
 TARGET = turbocalc
 SRC = turbocalc.c
