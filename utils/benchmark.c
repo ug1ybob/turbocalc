@@ -105,7 +105,7 @@ void* thread_benchmark(void* arg) {
             data->calculated_ghz = ((double)total_cycles / elapsed_seconds) / 1e9;
         }
         data->sysfs_ghz = get_sysfs_cpu_freq_ghz(data->cpu_id);
-    } else {
+    } else if (power_hog != NULL) {
         power_hog();
     }
 

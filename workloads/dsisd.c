@@ -3,7 +3,7 @@
 
 // A cycle-deterministic SISD workload
 void deterministic_sisd_workload(uint64_t total_instructions) {
-    // We unroll the loop by 10 to hide the branch overhead (dec + jnz).
+    // Unroll the loop by 10 to hide the branch overhead (dec + jnz).
     // The OoO engine will execute the loop control in parallel,
     // leaving the add/xor chain as the sole timing bottleneck.
     uint64_t loops = total_instructions / 10;
@@ -78,8 +78,8 @@ void deterministic_sisd_workload(uint64_t total_instructions) {
     );
 #else
     // Fallback for any other architecture (Standard optimized C if assembly is unknown)
-    // We declare val as volatile. This prevents the compiler from optimizing 
-    // it away or caching it purely in hardware registers without running the math.
+    // Declare val as volatile. This prevents the compiler from optimizing
+    // it away or caching it purely in hardware registers withou running the math.
     volatile uint64_t v_val = val;
     uint64_t t_val = toggle_val;
 

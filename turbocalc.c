@@ -148,6 +148,8 @@ int main(int argc, char *argv[]) {
     uint64_t warmup_iterations = total_iterations / 5;
 
     int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+
+    if (stress_mcore) { resolve_power_hog(); }
     if (verbose) { printf("[+] Detected logical cores: %d\n", num_cores); }
 
     if (check_perf_permissions() < 0) {
@@ -265,6 +267,7 @@ int main(int argc, char *argv[]) {
         }
 
         double run_sum = 0.0;
+	int run_successful_measures = 0;
         for (int i = 0; i < num_cores; i++) {
             if (!t_data[i].is_probe) {
                 pthread_cancel(threads[i]);
@@ -272,25 +275,25 @@ int main(int argc, char *argv[]) {
             pthread_join(threads[i], NULL);
             if (t_data[i].calculated_ghz > 0.0 && t_data[i].is_probe) {
                 if (compensate) { t_data[i].calculated_ghz = apply_bclk_compensation(t_data[i]); }
-                if (verbose) { printf("  -> CPU %d: %.3f GHz\n", i, t_data[i].calculated_ghz); }
+                //if (verbose) { printf("  -> CPU %d: %.3f GHz\n", i, t_data[i].calculated_ghz); }
                 run_sum += t_data[i].calculated_ghz;
                 if (t_data[i].calculated_ghz > max_multi_ghz) {
                     max_multi_ghz = t_data[i].calculated_ghz;
                 }
-                successful_measures++;
+                run_successful_measures++;
             } else {
-                if (verbose) { printf("  -> CPU %d: [N/A]\n", i); }
+                //if (verbose) { printf("  -> CPU %d: [N/A]\n", i); }
             }
         }
         pthread_barrier_destroy(&start_barrier);
-        double run_avg = run_sum / num_cores;
+        double run_avg = run_sum / run_successful_measures;
 	sum_ghz += run_sum;
+	successful_measures += run_successful_measures;
         if (verbose) { printf("  -> Multi-Core run #%d average: %.3f GHz\n", r, run_avg); }
     }
 
     // Print out the report
-    if (verbose) { printf("\n=== Final benchmark summary ===\n"
-                          "\nParallel execution breakdown:\n"); }
+    if (verbose) { printf("\n=== Final benchmark summary ===\n"); }
 
     if (single_data.calculated_ghz > 0.0) {
         snprintf(max_single, sizeof(max_single), "%.3f", max_single_ghz);
