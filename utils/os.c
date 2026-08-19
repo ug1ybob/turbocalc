@@ -13,12 +13,27 @@ long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
     return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
 }
 
-// Static inline function to read the x86 Time-Stamp Counter (TSC)
+// function to read x86 TSC or Arm64 CNTPCT_EL0
 uint64_t get_cycles(void) {
+#if defined(__x86_64__)
     uint32_t lo, hi;
     // rdtscp forces serialization, ensuring all previous instructions have executed
     __asm__ __volatile__ ("rdtscp" : "=a" (lo), "=d" (hi) :: "%rcx");
     return ((uint64_t)hi << 32) | lo;
+#elif defined(__aarch64__)
+    uint64_t val;
+    // 1. "isb" (Instruction Synchronization Barrier) forces instruction-serialization, 
+    //    matching the out-of-order execution prevention behavior of Intel's "rdtscp".
+    // 2. "mrs" reads the physical counter system register into our 64-bit variable.
+    __asm__ __volatile__ (
+        "isb\n\t"
+        "mrs %[val], cntpct_el0\n\t"
+        : [val] "=r" (val)
+        :
+        : "memory"
+    );
+    return val;
+#endif
 }
 
 // Verifies system permissions before running the main logic

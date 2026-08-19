@@ -10,14 +10,4 @@
 
 extern bool verbose;
 
-// Structure passed to each worker thread
-typedef struct {
-    int      cpu_id;
-    uint64_t total_iterations;
-    uint64_t warmup_iterations;
-    double   calculated_ghz;
-    double   sysfs_ghz;
-    char     *load_function;
-} thread_data_t;
-
 #endif /* _TYPES_H */

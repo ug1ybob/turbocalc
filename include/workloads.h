@@ -19,6 +19,8 @@ bool is_deterministic_workload(const char *wname);
 
 void run_workload(const char *wname, uint64_t iterations);
 
+void power_hog();
+
 void deterministic_sisd_workload(uint64_t total_instructions);
 
 void sisd_workload(uint64_t iterations);

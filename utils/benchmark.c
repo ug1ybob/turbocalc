@@ -39,6 +39,7 @@ void* thread_benchmark(void* arg) {
     if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
         pthread_exit(NULL);
     }
+    pthread_barrier_wait(&start_barrier);
 
     // Configure perf_event for this specific thread and core
     struct perf_event_attr pe;
@@ -50,59 +51,63 @@ void* thread_benchmark(void* arg) {
     pe.exclude_kernel = 1;
     pe.exclude_hv     = 1;
 
+    if (data->is_probe) {
 #if defined(__x86_64__)
-    bool is_x86 = true;
+        bool is_x86 = true;
 #else
-    bool is_x86 = false;
+        bool is_x86 = false;
 #endif
 
-    bool has_pmu = true;
-    int fd = perf_event_open(&pe, 0, data->cpu_id, -1, 0);
-    if (fd == -1) {
-        if (is_x86) {
-            has_pmu = false;
+        bool has_pmu = true;
+        int fd = perf_event_open(&pe, 0, data->cpu_id, -1, 0);
+        if (fd == -1) {
+            if (is_x86) {
+                has_pmu = false;
+            } else {
+                pthread_exit(NULL);
+            }
+        }
+
+        run_workload(data->load_function, data->warmup_iterations);
+
+        struct   timespec start_time, end_time;
+        uint64_t start_cycles, end_cycles, total_cycles;
+
+        if (has_pmu) {
+            ioctl(fd, PERF_EVENT_IOC_RESET,   0);
+            ioctl(fd, PERF_EVENT_IOC_ENABLE,  0);
         } else {
-            pthread_exit(NULL);
+            start_cycles = get_cycles();
         }
-    }
 
-    run_workload(data->load_function, data->warmup_iterations);
+        clock_gettime(CLOCK_MONOTONIC, &start_time);
+        run_workload(data->load_function, data->total_iterations);
+        clock_gettime(CLOCK_MONOTONIC, &end_time);
 
-    struct   timespec start_time, end_time;
-    uint64_t start_cycles, end_cycles, total_cycles;
+        double elapsed_seconds = (end_time.tv_sec - start_time.tv_sec) +
+                                 (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
 
-    if (has_pmu) {
-        ioctl(fd, PERF_EVENT_IOC_RESET,   0);
-        ioctl(fd, PERF_EVENT_IOC_ENABLE,  0);
-    } else {
-        start_cycles = get_cycles();
-    }
-
-    clock_gettime(CLOCK_MONOTONIC, &start_time);
-    run_workload(data->load_function, data->total_iterations);
-    clock_gettime(CLOCK_MONOTONIC, &end_time);
-
-    double elapsed_seconds = (end_time.tv_sec - start_time.tv_sec) +
-                             (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
-
-    if (has_pmu) {
-        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-        if (read(fd, &total_cycles, sizeof(uint64_t)) == -1) {
+        if (has_pmu) {
+            ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+            if (read(fd, &total_cycles, sizeof(uint64_t)) == -1) {
+                close(fd);
+                pthread_exit(NULL);
+            }
             close(fd);
-            pthread_exit(NULL);
+        } else {
+            end_cycles = get_cycles();
+            total_cycles = end_cycles - start_cycles;
         }
-        close(fd);
-    } else {
-        end_cycles = get_cycles();
-        total_cycles = end_cycles - start_cycles;
-    }
 
-    if (is_deterministic_workload(data->load_function)) {
-        data->calculated_ghz = ((double)data->total_iterations / elapsed_seconds) / 1e9;
+        if (is_deterministic_workload(data->load_function)) {
+            data->calculated_ghz = ((double)data->total_iterations / elapsed_seconds) / 1e9;
+        } else {
+            data->calculated_ghz = ((double)total_cycles / elapsed_seconds) / 1e9;
+        }
+        data->sysfs_ghz = get_sysfs_cpu_freq_ghz(data->cpu_id);
     } else {
-        data->calculated_ghz = ((double)total_cycles / elapsed_seconds) / 1e9;
+        power_hog();
     }
-    data->sysfs_ghz = get_sysfs_cpu_freq_ghz(data->cpu_id);
 
     pthread_exit(NULL);
 }

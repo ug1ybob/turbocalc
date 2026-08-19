@@ -76,5 +76,33 @@ void deterministic_sisd_workload(uint64_t total_instructions) {
         // Clobbers: "cc" (Condition Codes flag register is modified by 'subs')
         : "cc"
     );
+#else
+    // Fallback for any other architecture (Standard optimized C if assembly is unknown)
+    // We declare val as volatile. This prevents the compiler from optimizing 
+    // it away or caching it purely in hardware registers without running the math.
+    volatile uint64_t v_val = val;
+    uint64_t t_val = toggle_val;
+
+    for (uint64_t i = 0; i < loops; i++) {
+        // Strict, sequential dependency chain in plain C
+        v_val = v_val + t_val;
+        v_val = v_val ^ t_val;
+        
+        v_val = v_val + t_val;
+        v_val = v_val ^ t_val;
+        
+        v_val = v_val + t_val;
+        v_val = v_val ^ t_val;
+        
+        v_val = v_val + t_val;
+        v_val = v_val ^ t_val;
+        
+        v_val = v_val + t_val;
+        v_val = v_val ^ t_val;
+    }
+    
+    // Prevent the compiler from optimizing out the whole block by 
+    // forcing a logical operation that depends on the loop output
+    (void)v_val; 
 #endif
 }

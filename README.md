@@ -14,10 +14,10 @@ Options:
   -r, --runs <count>     Number of test runs (default: 5)
   -m, --max_tcores       Find the max count of single-core turbo capable cores (basic)
   -M, --max_tcores_full  Find the max count of single-core turbo capable cores (thorough)
+  -s, --stress_mcore     Apply a SIMD stress to certain multi-core scenarios to induce throttling
   -v, --verbose          Display more details (only works for txt format)
   -w, --workload         Workload type (default: sisd)
   -h, --help             Display this help message
-Usage: turbocalc [Options]
 ```
 
 ## Examples
