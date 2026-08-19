@@ -275,14 +275,11 @@ int main(int argc, char *argv[]) {
             pthread_join(threads[i], NULL);
             if (t_data[i].calculated_ghz > 0.0 && t_data[i].is_probe) {
                 if (compensate) { t_data[i].calculated_ghz = apply_bclk_compensation(t_data[i]); }
-                //if (verbose) { printf("  -> CPU %d: %.3f GHz\n", i, t_data[i].calculated_ghz); }
                 run_sum += t_data[i].calculated_ghz;
                 if (t_data[i].calculated_ghz > max_multi_ghz) {
                     max_multi_ghz = t_data[i].calculated_ghz;
                 }
                 run_successful_measures++;
-            } else {
-                //if (verbose) { printf("  -> CPU %d: [N/A]\n", i); }
             }
         }
         pthread_barrier_destroy(&start_barrier);

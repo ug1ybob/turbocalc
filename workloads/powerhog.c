@@ -23,19 +23,70 @@ __attribute__((target("avx512f")))
 void power_hog_avx512(void) {
     // Ensure this thread can be forcefully stopped by the main thread
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
+    // Allocate 32 MB of memory per thread.
+    // Across 192 threads, this requires ~6 GB of RAM and thoroughly thrashes
+    // the EPYC L3 cache and memory controllers.
+    size_t buf_size = 32 * 1024 * 1024;
+
+    // We MUST align the memory to 64 bytes for AVX-512 (zmm) instructions to work safely.
+    double *buffer = (double *)aligned_alloc(64, buf_size);
+    if (!buffer) {
+        // Fallback if allocation fails
+        while(1) {}
+    }
+
+    // Initialize the buffer to prevent multiplying by NaN/0
+    for (size_t i = 0; i < buf_size / sizeof(double); i++) {
+        buffer[i] = 1.00001;
+    }
+
+    // Pointers for our sliding window
+    double *ptr = buffer;
+    double *end = buffer + (buf_size / sizeof(double));
+
     __asm__ volatile (
+        // Initialize accumulator registers with dummy data
+        "vmovapd 0(%[start]), %%zmm4\n\t"
+        "vmovapd 64(%[start]), %%zmm5\n\t"
+        "vmovapd 128(%[start]), %%zmm6\n\t"
+        "vmovapd 192(%[start]), %%zmm7\n\t"
+
         ".align 16\n"
         "1:\n\t"
-        "vfmadd231pd %%zmm0, %%zmm0, %%zmm0\n\t"
-        "vfmadd231pd %%zmm1, %%zmm1, %%zmm1\n\t"
-        "vfmadd231pd %%zmm2, %%zmm2, %%zmm2\n\t"
-        "vfmadd231pd %%zmm3, %%zmm3, %%zmm3\n\t"
-        "vfmadd231pd %%zmm4, %%zmm4, %%zmm4\n\t"
-        "vfmadd231pd %%zmm5, %%zmm5, %%zmm5\n\t"
+        // 1. LOAD 4 cache lines (256 bytes) from Memory into zmm0-zmm3
+        "vmovapd 0(%[ptr]), %%zmm0\n\t"
+        "vmovapd 64(%[ptr]), %%zmm1\n\t"
+        "vmovapd 128(%[ptr]), %%zmm2\n\t"
+        "vmovapd 192(%[ptr]), %%zmm3\n\t"
+
+        // 2. COMPUTE: Massive 512-bit Fused Multiply-Add
+        "vfmadd231pd %%zmm4, %%zmm4, %%zmm0\n\t"
+        "vfmadd231pd %%zmm5, %%zmm5, %%zmm1\n\t"
+        "vfmadd231pd %%zmm6, %%zmm6, %%zmm2\n\t"
+        "vfmadd231pd %%zmm7, %%zmm7, %%zmm3\n\t"
+
+        // 3. STORE the computed results back to Memory
+        "vmovapd %%zmm0, 0(%[ptr])\n\t"
+        "vmovapd %%zmm1, 64(%[ptr])\n\t"
+        "vmovapd %%zmm2, 128(%[ptr])\n\t"
+        "vmovapd %%zmm3, 192(%[ptr])\n\t"
+
+        // 4. Advance the pointer by 256 bytes (32 doubles)
+        "add $256, %[ptr]\n\t"
+
+        // 5. Check if we reached the end of the 32MB buffer
+        "cmp %[end], %[ptr]\n\t"
+        "jb 1b\n\t" // Jump back to '1' if pointer is below end
+
+        // 6. Reset pointer to start and loop endlessly
+        "mov %[start], %[ptr]\n\t"
         "jmp 1b\n\t"
-        : // No outputs
-        : // No inputs
-        : "zmm0", "zmm1", "zmm2", "zmm3", "zmm4", "zmm5" // Clobbered registers
+
+        // Operand Bindings
+        : [ptr] "+r" (ptr)
+        : [end] "r" (end), [start] "r" (buffer)
+        : "zmm0", "zmm1", "zmm2", "zmm3", "zmm4", "zmm5", "zmm6", "zmm7", "cc", "memory"
     );
 }
 
