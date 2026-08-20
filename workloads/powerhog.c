@@ -114,27 +114,70 @@ void power_hog_avx512(void) {
 
 __attribute__((target("avx2")))
 void power_hog_avx2(void) {
+    // 1. Thread-safe global memory allocation
+    if (global_power_buffer == NULL) {
+        if (__sync_bool_compare_and_swap(&buffer_lock, 0, 1)) {
+            if (global_power_buffer == NULL) {
+                global_power_buffer = (double *)aligned_alloc(64, global_buf_size);
+                if (global_power_buffer) {
+                    memset(global_power_buffer, 0x3F, global_buf_size);
+                }
+            }
+        } else {
+            while (global_power_buffer == NULL) {
+                __asm__ volatile ("pause" ::: "memory");
+            }
+        }
+    }
+
+    if (!global_power_buffer) while(1) {}
+
     uint32_t loops = 0;
     while (1) {
         if (stop_hog) {
             break;
         }
         __asm__ volatile (
-            "mov $1000, %[loops]\n\t"
-            ".align 16\n"
-            "1:\n\t"
+            // Load data from L1 Cache
+            "vmovupd 0(%[start]), %%ymm0\n\t"
+            "vmovupd 32(%[start]), %%ymm1\n\t"
+            "vmovupd 64(%[start]), %%ymm2\n\t"
+            "vmovupd 96(%[start]), %%ymm3\n\t"
+
+            // Smash with Fused Multiply-Add
             "vfmadd231pd %%ymm0, %%ymm0, %%ymm0\n\t"
             "vfmadd231pd %%ymm1, %%ymm1, %%ymm1\n\t"
             "vfmadd231pd %%ymm2, %%ymm2, %%ymm2\n\t"
             "vfmadd231pd %%ymm3, %%ymm3, %%ymm3\n\t"
+
+            // Write data back to L1 Cache (Forces the Load/Store Units to pull max current)
+            "vmovupd %%ymm0, 0(%[start])\n\t"
+            "vmovupd %%ymm1, 32(%[start])\n\t"
+            "vmovupd %%ymm2, 64(%[start])\n\t"
+            "vmovupd %%ymm3, 96(%[start])\n\t"
+
+            // Repeat to keep instruction density high
+            "vmovupd 128(%[start]), %%ymm4\n\t"
+            "vmovupd 160(%[start]), %%ymm5\n\t"
+            "vmovupd 192(%[start]), %%ymm6\n\t"
+            "vmovupd 224(%[start]), %%ymm7\n\t"
+
             "vfmadd231pd %%ymm4, %%ymm4, %%ymm4\n\t"
             "vfmadd231pd %%ymm5, %%ymm5, %%ymm5\n\t"
+            "vfmadd231pd %%ymm6, %%ymm6, %%ymm6\n\t"
+            "vfmadd231pd %%ymm7, %%ymm7, %%ymm7\n\t"
+
+            "vmovupd %%ymm4, 128(%[start])\n\t"
+            "vmovupd %%ymm5, 160(%[start])\n\t"
+            "vmovupd %%ymm6, 192(%[start])\n\t"
+            "vmovupd %%ymm7, 224(%[start])\n\t"
+
             "dec %[loops]\n\t"
             "jnz 1b\n\t"
 
             : [loops] "=r" (loops)
-            : "[loops]" (0)
-            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5" // Clobbered registers
+            : [start] "r" (global_power_buffer), "[loops]" (0)
+            : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7", "cc", "memory"
         );
     }
 }
