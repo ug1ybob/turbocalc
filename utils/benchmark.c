@@ -52,32 +52,27 @@ void* thread_benchmark(void* arg) {
     pe.exclude_hv     = 1;
 
     if (data->is_probe) {
-#if defined(__x86_64__)
-        bool is_x86 = true;
-#else
-        bool is_x86 = false;
-#endif
-
+        struct   timespec start_time, end_time;
+        uint64_t start_cycles=0, end_cycles=0, total_cycles;
         bool has_pmu = true;
-        int fd = perf_event_open(&pe, 0, data->cpu_id, -1, 0);
-        if (fd == -1) {
-            if (is_x86) {
+	int fd = -1;
+
+        if (!is_deterministic_workload(data->load_function)) {
+            fd = perf_event_open(&pe, 0, data->cpu_id, -1, 0);
+            if (fd == -1) {
                 has_pmu = false;
-            } else {
-                pthread_exit(NULL);
             }
         }
 
         run_workload(data->load_function, data->warmup_iterations);
 
-        struct   timespec start_time, end_time;
-        uint64_t start_cycles, end_cycles, total_cycles;
-
-        if (has_pmu) {
-            ioctl(fd, PERF_EVENT_IOC_RESET,   0);
-            ioctl(fd, PERF_EVENT_IOC_ENABLE,  0);
-        } else {
-            start_cycles = get_cycles();
+        if (!is_deterministic_workload(data->load_function)) {
+            if (has_pmu) {
+                ioctl(fd, PERF_EVENT_IOC_RESET,   0);
+                ioctl(fd, PERF_EVENT_IOC_ENABLE,  0);
+            } else {
+                start_cycles = get_cycles();
+            }
         }
 
         clock_gettime(CLOCK_MONOTONIC, &start_time);
@@ -87,16 +82,18 @@ void* thread_benchmark(void* arg) {
         double elapsed_seconds = (end_time.tv_sec - start_time.tv_sec) +
                                  (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
 
-        if (has_pmu) {
-            ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-            if (read(fd, &total_cycles, sizeof(uint64_t)) == -1) {
+        if (!is_deterministic_workload(data->load_function)) {
+            if (has_pmu) {
+                ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+                if (read(fd, &total_cycles, sizeof(uint64_t)) == -1) {
+                    close(fd);
+                    pthread_exit(NULL);
+                }
                 close(fd);
-                pthread_exit(NULL);
+            } else {
+                end_cycles = get_cycles();
+                total_cycles = end_cycles - start_cycles;
             }
-            close(fd);
-        } else {
-            end_cycles = get_cycles();
-            total_cycles = end_cycles - start_cycles;
         }
 
         if (is_deterministic_workload(data->load_function)) {

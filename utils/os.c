@@ -22,12 +22,12 @@ uint64_t get_cycles(void) {
     return ((uint64_t)hi << 32) | lo;
 #elif defined(__aarch64__)
     uint64_t val;
-    // 1. "isb" (Instruction Synchronization Barrier) forces instruction-serialization, 
-    //    matching the out-of-order execution prevention behavior of Intel's "rdtscp".
-    // 2. "mrs" reads the physical counter system register into our 64-bit variable.
+    // "isb" (Instruction Synchronization Barrier) forces instruction-serialization, 
+    //  matching the out-of-order execution prevention behavior of Intel's "rdtscp".
+    // "mrs" reads the physical counter system register into our 64-bit variable.
     __asm__ __volatile__ (
         "isb\n\t"
-        "mrs %[val], cntpct_el0\n\t"
+        "mrs %[val], cntvct_el0\n\t"
         : [val] "=r" (val)
         :
         : "memory"
