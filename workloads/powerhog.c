@@ -64,7 +64,7 @@ void power_hog_avx512(void) {
             "mov $1000, %[loops]\n\t" // Run 32,000 FMAs before checking stop flag again
             ".align 16\n"
             "1:\n\t"
-            // We alternate operations on zmm0-zmm7.
+            // Alternate operations on zmm0-zmm7.
             // This saturates all execution ports with absolutely zero register dependencies or pipeline bubbles!
             "vfmadd231pd %%zmm0, %%zmm0, %%zmm0\n\t"
             "vfmadd231pd %%zmm1, %%zmm1, %%zmm1\n\t"
@@ -115,54 +115,81 @@ void power_hog_avx512(void) {
 __attribute__((target("avx2")))
 void power_hog_avx2(void) {
     uint32_t loops = 0;
+    double volatile_sink[4] __attribute__((aligned(32))) = {1.0, 1.1, 1.2, 1.3};
+    double *sink_ptr = &volatile_sink[0];
+
     while (1) {
         if (stop_hog) {
             break;
         }
+	loops = 0;
         __asm__ volatile (
-            "mov $1000, %[loops]\n\t" 
+            // Initialize the registers from our memory source pointer
+            "vmovupd 0(%[ptr]), %%ymm0\n\t"
+            "vmovupd 0(%[ptr]), %%ymm1\n\t"
+            "vmovupd 0(%[ptr]), %%ymm2\n\t"
+            "vmovupd 0(%[ptr]), %%ymm3\n\t"
+            "vmovupd 0(%[ptr]), %%ymm4\n\t"
+            "vmovupd 0(%[ptr]), %%ymm5\n\t"
+            "vmovupd 0(%[ptr]), %%ymm6\n\t"
+            "vmovupd 0(%[ptr]), %%ymm7\n\t"
+
+            "mov $2000, %[loops]\n\t" // Run 80,000 back-to-back FMAs before checking stop flag
             ".align 16\n"
             "1:\n\t"
-
-            // Load data from L1 Cache
-            "vmovupd 0(%[start]), %%ymm0\n\t"
-            "vmovupd 32(%[start]), %%ymm1\n\t"
-            "vmovupd 64(%[start]), %%ymm2\n\t"
-            "vmovupd 96(%[start]), %%ymm3\n\t"
-
-            // Smash with Fused Multiply-Add
             "vfmadd231pd %%ymm0, %%ymm0, %%ymm0\n\t"
             "vfmadd231pd %%ymm1, %%ymm1, %%ymm1\n\t"
             "vfmadd231pd %%ymm2, %%ymm2, %%ymm2\n\t"
             "vfmadd231pd %%ymm3, %%ymm3, %%ymm3\n\t"
-
-            // Write data back to L1 Cache (Forces the Load/Store Units to pull max current)
-            "vmovupd %%ymm0, 0(%[start])\n\t"
-            "vmovupd %%ymm1, 32(%[start])\n\t"
-            "vmovupd %%ymm2, 64(%[start])\n\t"
-            "vmovupd %%ymm3, 96(%[start])\n\t"
-
-            // Repeat to keep instruction density high
-            "vmovupd 128(%[start]), %%ymm4\n\t"
-            "vmovupd 160(%[start]), %%ymm5\n\t"
-            "vmovupd 192(%[start]), %%ymm6\n\t"
-            "vmovupd 224(%[start]), %%ymm7\n\t"
-
             "vfmadd231pd %%ymm4, %%ymm4, %%ymm4\n\t"
             "vfmadd231pd %%ymm5, %%ymm5, %%ymm5\n\t"
             "vfmadd231pd %%ymm6, %%ymm6, %%ymm6\n\t"
             "vfmadd231pd %%ymm7, %%ymm7, %%ymm7\n\t"
 
-            "vmovupd %%ymm4, 128(%[start])\n\t"
-            "vmovupd %%ymm5, 160(%[start])\n\t"
-            "vmovupd %%ymm6, 192(%[start])\n\t"
-            "vmovupd %%ymm7, 224(%[start])\n\t"
+            "vfmadd231pd %%ymm0, %%ymm0, %%ymm0\n\t"
+            "vfmadd231pd %%ymm1, %%ymm1, %%ymm1\n\t"
+            "vfmadd231pd %%ymm2, %%ymm2, %%ymm2\n\t"
+            "vfmadd231pd %%ymm3, %%ymm3, %%ymm3\n\t"
+            "vfmadd231pd %%ymm4, %%ymm4, %%ymm4\n\t"
+            "vfmadd231pd %%ymm5, %%ymm5, %%ymm5\n\t"
+            "vfmadd231pd %%ymm6, %%ymm6, %%ymm6\n\t"
+            "vfmadd231pd %%ymm7, %%ymm7, %%ymm7\n\t"
+
+            "vfmadd231pd %%ymm0, %%ymm0, %%ymm0\n\t"
+            "vfmadd231pd %%ymm1, %%ymm1, %%ymm1\n\t"
+            "vfmadd231pd %%ymm2, %%ymm2, %%ymm2\n\t"
+            "vfmadd231pd %%ymm3, %%ymm3, %%ymm3\n\t"
+            "vfmadd231pd %%ymm4, %%ymm4, %%ymm4\n\t"
+            "vfmadd231pd %%ymm5, %%ymm5, %%ymm5\n\t"
+            "vfmadd231pd %%ymm6, %%ymm6, %%ymm6\n\t"
+            "vfmadd231pd %%ymm7, %%ymm7, %%ymm7\n\t"
+
+            "vfmadd231pd %%ymm0, %%ymm0, %%ymm0\n\t"
+            "vfmadd231pd %%ymm1, %%ymm1, %%ymm1\n\t"
+            "vfmadd231pd %%ymm2, %%ymm2, %%ymm2\n\t"
+            "vfmadd231pd %%ymm3, %%ymm3, %%ymm3\n\t"
+            "vfmadd231pd %%ymm4, %%ymm4, %%ymm4\n\t"
+            "vfmadd231pd %%ymm5, %%ymm5, %%ymm5\n\t"
+            "vfmadd231pd %%ymm6, %%ymm6, %%ymm6\n\t"
+            "vfmadd231pd %%ymm7, %%ymm7, %%ymm7\n\t"
 
             "dec %[loops]\n\t"
             "jnz 1b\n\t"
 
-            : [loops] "=r" (loops)
-            : [start] "r" (global_power_buffer), "[loops]" (0)
+            // Accumulate the final sum to force dependency tracking
+            "vaddpd %%ymm0, %%ymm1, %%ymm0\n\t"
+            "vaddpd %%ymm2, %%ymm3, %%ymm1\n\t"
+            "vaddpd %%ymm4, %%ymm5, %%ymm2\n\t"
+            "vaddpd %%ymm6, %%ymm7, %%ymm3\n\t"
+            "vaddpd %%ymm0, %%ymm1, %%ymm0\n\t"
+            "vaddpd %%ymm2, %%ymm3, %%ymm1\n\t"
+            "vaddpd %%ymm0, %%ymm1, %%ymm0\n\t"
+            
+            // Write cumulative sum back to pointer location (volatile sink)
+            "vmovupd %%ymm0, 0(%[ptr])\n\t" 
+
+            : [loops] "+r" (loops)
+            : [ptr] "r" (sink_ptr)
             : "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7", "cc", "memory"
         );
     }
