@@ -23,9 +23,9 @@ Options:
 ## Examples
 
 ```
-docker run --rm --security-opt seccomp=unconfined --cap-add SYS_ADMIN ug1ybob/turbocalc:0.0.2 -f csv >turbo.csv
+docker run --rm --security-opt seccomp=unconfined --cap-add SYS_ADMIN ug1ybob/turbocalc:0.0.7 -f csv >turbo.csv
 ```
 ```
-docker run --rm --security-opt seccomp=unconfined --cap-add SYS_ADMIN ug1ybob/turbocalc:0.0.2 -m -w d_sisd
+docker run --rm --security-opt seccomp=unconfined --cap-add SYS_ADMIN ug1ybob/turbocalc:0.0.7 -m -w d_sisd -s
 ```
 
