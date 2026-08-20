@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-// On ARM64, we need these headers to query the auxiliary vector for HWCAPS
+// On ARM64, headers to query the auxiliary vector for HWCAPS
 #if defined(__aarch64__)
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
@@ -26,7 +26,7 @@ static volatile int buffer_lock = 0; // Simple spinlock for thread safety
 // This lights up the heavy vector ALUs on x86 CPU.
 __attribute__((target("avx512f")))
 void power_hog_avx512(void) {
-    // 1. Thread-safe global memory allocation
+    // Thread-safe global memory allocation
     if (global_power_buffer == NULL) {
         if (__sync_bool_compare_and_swap(&buffer_lock, 0, 1)) {
             if (global_power_buffer == NULL) {
@@ -50,7 +50,7 @@ void power_hog_avx512(void) {
             break;
         }
         // Inner assembly block running 32 back-to-back FMAs per iteration.
-        // We strictly use scratch registers zmm0-zmm7.
+        // Only use scratch registers zmm0-zmm7.
         __asm__ volatile (
             "vmovupd 0(%[start]), %%zmm0\n\t"
             "vmovupd 0(%[start]), %%zmm1\n\t"
@@ -114,30 +114,16 @@ void power_hog_avx512(void) {
 
 __attribute__((target("avx2")))
 void power_hog_avx2(void) {
-    // 1. Thread-safe global memory allocation
-    if (global_power_buffer == NULL) {
-        if (__sync_bool_compare_and_swap(&buffer_lock, 0, 1)) {
-            if (global_power_buffer == NULL) {
-                global_power_buffer = (double *)aligned_alloc(64, global_buf_size);
-                if (global_power_buffer) {
-                    memset(global_power_buffer, 0x3F, global_buf_size);
-                }
-            }
-        } else {
-            while (global_power_buffer == NULL) {
-                __asm__ volatile ("pause" ::: "memory");
-            }
-        }
-    }
-
-    if (!global_power_buffer) while(1) {}
-
     uint32_t loops = 0;
     while (1) {
         if (stop_hog) {
             break;
         }
         __asm__ volatile (
+            "mov $1000, %[loops]\n\t" 
+            ".align 16\n"
+            "1:\n\t"
+
             // Load data from L1 Cache
             "vmovupd 0(%[start]), %%ymm0\n\t"
             "vmovupd 32(%[start]), %%ymm1\n\t"
