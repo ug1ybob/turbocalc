@@ -73,7 +73,7 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
                 if (strcmp(optarg, "csv") == 0) {
-		    verbose = false;
+                    verbose = false;
                 }
                 format = optarg;
                 break;
@@ -246,6 +246,7 @@ int main(int argc, char *argv[]) {
 
     for (int r = 1; r <= num_runs; r++) {
         pthread_barrier_init(&start_barrier, NULL, num_cores);
+        stop_hog = false;
         for (int i = 0; i < num_cores; i++) {
             t_data[i] = (thread_data_t){
                 .cpu_id = i,
@@ -270,7 +271,7 @@ int main(int argc, char *argv[]) {
 	int run_successful_measures = 0;
         for (int i = 0; i < num_cores; i++) {
             if (!t_data[i].is_probe) {
-                pthread_cancel(threads[i]);
+                stop_hog = true;
             }
             pthread_join(threads[i], NULL);
             if (t_data[i].calculated_ghz > 0.0 && t_data[i].is_probe) {

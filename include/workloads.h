@@ -16,6 +16,8 @@ typedef void (*power_hog_func_t)(void);
 
 extern power_hog_func_t power_hog;
 
+extern volatile bool stop_hog;
+
 // Various stress functions
 void power_hog_avx512(void);
 
