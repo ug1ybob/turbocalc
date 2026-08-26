@@ -8,7 +8,7 @@
 const char *const CSV_FMT = "#MAX_SINGLE_GHZ,#MAX_MULTI_GHZ,#AVG_MULTI_GHZ,#MULTI_DROP_GHZ,#MAX_SCT_CORES\n"
                             "%s,%s,%s,%s,%s\n";
 
-const char *const TXT_FMT = "Peak single-core turbo (CPU 0)  : %s GHz\n"
+const char *const TXT_FMT = "Peak single-core turbo          : %s GHz\n"
                             "Peak multi-core turbo (highest) : %s GHz\n"
                             "Average multi-core frequency    : %s GHz\n"
                             "Multi-core thermal/power drop   : %s GHz\n"

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <getopt.h>
 #include <pthread.h>
@@ -13,7 +14,9 @@
 #include "include/workloads.h"
 
 bool verbose = false;
-pthread_barrier_t start_barrier;
+_Atomic int ready_workers;
+_Atomic int completed_probes;
+_Atomic bool benchmark_start_failed;
 
 int main(int argc, char *argv[]) {
 
@@ -24,11 +27,12 @@ int main(int argc, char *argv[]) {
     bool     max_tcores             = false;  // Default: skip basic test for max parallel sc turbo cores
     bool     max_tcores_full        = false;  // Default: skip thorough test for max parallel sc turbo cores
     bool     stress_mcore           = false;  // Default: do not attempt to reach throttling via SIMD stress
+    bool     allow_smt              = false;  // Default: one logical CPU per physical core
     char    *workload               = "sisd"; // Default: use SISD workload
 
     double   max_multi_ghz          = 0.0;
     double   max_single_ghz         = 0.0;
-    int      max_simultaneous_cores = 1;
+    int      max_simultaneous_cores = 0;
 
     static const char *usage_msg    = "Usage: turbocalc [Options]\n"
                                       "Options:\n"
@@ -40,6 +44,7 @@ int main(int argc, char *argv[]) {
                                       "  -m, --max_tcores       Find the max count of single-core turbo capable cores (basic)\n"
                                       "  -M, --max_tcores_full  Find the max count of single-core turbo capable cores (thorough)\n"
                                       "  -s, --stress_mcore     Apply a SIMD stress to certain multi-core scenarios to induce throttling\n"
+                                      "  -t, --allow-smt        Run on every allowed logical CPU, including SMT siblings\n"
                                       "  -v, --verbose          Display more details (only works for txt format)\n"
                                       "  -w, --workload         Workload type (default: sisd)\n"
                                       "  -h, --help             Display this help message\n";
@@ -53,6 +58,7 @@ int main(int argc, char *argv[]) {
         {"max_tcores_f",   no_argument,       NULL, 'M'},
         {"runs",           required_argument, NULL, 'r'},
         {"stress_mcore",   no_argument,       NULL, 's'},
+        {"allow-smt",      no_argument,       NULL, 't'},
         {"verbose",        no_argument,       NULL, 'v'},
         {"workload",       required_argument, NULL, 'w'},
         {"help",           no_argument,       NULL, 'h'},
@@ -60,7 +66,7 @@ int main(int argc, char *argv[]) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "f:i:r:w:chlmMsv", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:i:r:w:chlmMstv", long_options, NULL)) != -1) {
         switch (opt) {
             case 'c': {
                 compensate = true;
@@ -82,6 +88,10 @@ int main(int argc, char *argv[]) {
                 long long val = strtoll(optarg, NULL, 10);
                 if (val <= 0) {
                     fprintf(stderr, "[X] ERROR: Iterations must be a positive integer.\n");
+                    return 1;
+                }
+                if ((uint64_t)val > UINT64_MAX / 1000000ULL) {
+                    fprintf(stderr, "[X] ERROR: Iterations value is too large.\n");
                     return 1;
                 }
                 iterations_input = (uint64_t)val;
@@ -111,6 +121,10 @@ int main(int argc, char *argv[]) {
             }
             case 's': {
                 stress_mcore = true;
+                break;
+            }
+            case 't': {
+                allow_smt = true;
                 break;
             }
             case 'v': {
@@ -147,41 +161,70 @@ int main(int argc, char *argv[]) {
     uint64_t total_iterations  = iterations_input * 1000000ULL;
     uint64_t warmup_iterations = total_iterations / 5;
 
-    int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+    int *cpu_ids = NULL;
+    int num_cores = get_cpu_ids(&cpu_ids, allow_smt);
+    if (num_cores <= 0) {
+        fprintf(stderr, "[X] Could not determine usable CPU cores.\n");
+        return 1;
+    }
 
     if (stress_mcore) { resolve_power_hog(); }
-    if (verbose) { printf("[+] Detected logical cores: %d\n", num_cores); }
+    if (verbose) {
+        printf("[+] Selected %s: %d\n", allow_smt ? "logical CPUs" : "physical cores", num_cores);
+        printf("[+] CPU IDs:");
+        for (int i = 0; i < num_cores; i++) printf(" %d", cpu_ids[i]);
+        printf("\n");
+    }
 
     if (check_perf_permissions() < 0) {
+        free(cpu_ids);
         return 1;
     }
 
     thread_data_t  single_data;
     thread_data_t* t_data  = malloc(num_cores * sizeof(thread_data_t));
     pthread_t*     threads = malloc(num_cores * sizeof(pthread_t));
+    if (!t_data || !threads) {
+        fprintf(stderr, "[X] Could not allocate worker data.\n");
+        free(cpu_ids);
+        free(t_data);
+        free(threads);
+        return 1;
+    }
 
     // Isolated Single-Core Turbo Test
-    // For now assume CPU 0 is always a P-core
-    if (verbose) { printf("\n=== Testing single-core turbo (isolated CPU 0) (%d runs) ===\n", num_runs); }
+    if (verbose) { printf("\n=== Testing single-core turbo (isolated CPU %d) (%d runs) ===\n", cpu_ids[0], num_runs); }
 
     for (int r = 1; r <= num_runs; r++) {
         single_data = (thread_data_t){
-            .cpu_id = 0,
+            .cpu_id = cpu_ids[0],
             .total_iterations = total_iterations,
-	    .warmup_iterations = warmup_iterations,
-       	    .calculated_ghz = 0.0,
-       	    .sysfs_ghz = 0.0,
+            .warmup_iterations = warmup_iterations,
+            .calculated_ghz = 0.0,
+            .sysfs_ghz = 0.0,
             .load_function = workload,
-	    .is_probe = true
+            .is_probe = true,
+            .worker_count = 1,
+            .probe_count = 1
         };
         pthread_t single_thread;
-        pthread_barrier_init(&start_barrier, NULL, 1);
+        atomic_store(&ready_workers, 0);
+        atomic_store(&completed_probes, 0);
+        atomic_store(&benchmark_start_failed, false);
         if (pthread_create(&single_thread, NULL, thread_benchmark, &single_data) != 0) {
             fprintf(stderr, "[X] Single-core thread creation failed\n");
+            free(cpu_ids);
+            free(t_data);
+            free(threads);
             return 1;
         }
         pthread_join(single_thread, NULL);
-        pthread_barrier_destroy(&start_barrier);
+        if (atomic_load(&benchmark_start_failed)) {
+            free(cpu_ids);
+            free(t_data);
+            free(threads);
+            return 1;
+        }
         if (compensate) { single_data.calculated_ghz = apply_bclk_compensation(single_data); }
         if (verbose) { printf("  -> Single-Core run result: %.3f GHz\n", single_data.calculated_ghz); }
         if (single_data.calculated_ghz > max_single_ghz) {
@@ -197,18 +240,36 @@ int main(int argc, char *argv[]) {
     if (max_tcores) {
         if (verbose) { printf("\n=== Testing max number of simultaneous single-core turbo capable cores ===\n"); }
         for (int active_count = 1; active_count <= num_cores; active_count++) {
-            pthread_barrier_init(&start_barrier, NULL, active_count);
+            atomic_store(&ready_workers, 0);
+            atomic_store(&completed_probes, 0);
+            atomic_store(&benchmark_start_failed, false);
+            int created = 0;
             for (int i = 0; i < active_count; i++) {
                 t_data[i] = (thread_data_t){
-                    .cpu_id = i,
+                    .cpu_id = cpu_ids[i],
                     .total_iterations = total_iterations,
                     .warmup_iterations = warmup_iterations,
                     .calculated_ghz = 0.0,
                     .sysfs_ghz = 0.0,
                     .load_function = workload,
-	            .is_probe = true
+                    .is_probe = true,
+                    .worker_count = active_count,
+                    .probe_count = active_count
                 };
-                pthread_create(&threads[i], NULL, thread_benchmark, &t_data[i]);
+                if (pthread_create(&threads[i], NULL, thread_benchmark, &t_data[i]) != 0) {
+                    fprintf(stderr, "[X] Thread creation failed for CPU %d\n", cpu_ids[i]);
+                    atomic_store(&benchmark_start_failed, true);
+                    break;
+                }
+                created++;
+            }
+
+            if (created != active_count) {
+                for (int i = 0; i < created; i++) pthread_join(threads[i], NULL);
+                free(cpu_ids);
+                free(threads);
+                free(t_data);
+                return 1;
             }
 
             double sum_active = 0.0;
@@ -217,7 +278,12 @@ int main(int argc, char *argv[]) {
                 if (compensate) { t_data[i].calculated_ghz = apply_bclk_compensation(t_data[i]); }
                 sum_active += t_data[i].calculated_ghz;
             }
-            pthread_barrier_destroy(&start_barrier);
+            if (atomic_load(&benchmark_start_failed)) {
+                free(cpu_ids);
+                free(threads);
+                free(t_data);
+                return 1;
+            }
 
             double avg_active = sum_active / active_count;
 
@@ -230,7 +296,7 @@ int main(int argc, char *argv[]) {
             }
 
             if (verbose) {
-                printf("  -> CPU %2d      |       %.3f GHz    | %s\n",
+                printf("  -> CPUs: %2d      |       %.3f GHz    | %s\n",
                     active_count, avg_active, matches_single ? "REACHES MAX TURBO" : "THROTTLED / DROPPED");
             }
 
@@ -240,26 +306,33 @@ int main(int argc, char *argv[]) {
 
     // Parallel multi-core turbo test loop
     if (verbose) {
-        printf("\n=== Stage 2: Testing multi-core turbo (%d runs) ===\n"
+        printf("\n=== Testing multi-core turbo (%d runs) ===\n"
                "[+] Launching parallel workload (%luM iterations per core)...\n", num_runs, iterations_input);
     }
 
     for (int r = 1; r <= num_runs; r++) {
-        pthread_barrier_init(&start_barrier, NULL, num_cores);
-        stop_hog = false;
+        atomic_store(&ready_workers, 0);
+        atomic_store(&completed_probes, 0);
+        atomic_store(&benchmark_start_failed, false);
+        atomic_store(&stop_hog, false);
         for (int i = 0; i < num_cores; i++) {
             t_data[i] = (thread_data_t){
-                .cpu_id = i,
+                .cpu_id = cpu_ids[i],
                 .total_iterations = total_iterations,
                 .warmup_iterations = warmup_iterations,
                 .calculated_ghz = 0.0,
                 .sysfs_ghz = 0.0,
                 .load_function = workload,
-		// only measure the first core, apply a heavy load to the rest
-	        .is_probe = (i != 0 && stress_mcore) ? false : true
+                // only measure the first core, apply a heavy load to the rest
+                .is_probe = (i != 0 && stress_mcore) ? false : true,
+                .worker_count = num_cores,
+                .probe_count = stress_mcore ? 1 : num_cores
             };
             if (pthread_create(&threads[i], NULL, thread_benchmark, &t_data[i]) != 0) {
                 fprintf(stderr, "[X] Thread creation failed for core %d\n", i);
+                atomic_store(&benchmark_start_failed, true);
+                for (int j = 0; j < i; j++) pthread_join(threads[j], NULL);
+                free(cpu_ids);
                 free(threads);
                 free(t_data);
                 return 1;
@@ -268,10 +341,10 @@ int main(int argc, char *argv[]) {
         }
 
         double run_sum = 0.0;
-	int run_successful_measures = 0;
+        int run_successful_measures = 0;
         for (int i = 0; i < num_cores; i++) {
             if (!t_data[i].is_probe) {
-                stop_hog = true;
+                atomic_store(&stop_hog, true);
             }
             pthread_join(threads[i], NULL);
             if (t_data[i].calculated_ghz > 0.0 && t_data[i].is_probe) {
@@ -283,10 +356,19 @@ int main(int argc, char *argv[]) {
                 run_successful_measures++;
             }
         }
-        pthread_barrier_destroy(&start_barrier);
+        if (atomic_load(&benchmark_start_failed)) {
+            free(cpu_ids);
+            free(threads);
+            free(t_data);
+            return 1;
+        }
+        if (run_successful_measures == 0) {
+            fprintf(stderr, "[X] Multi-core run produced no valid measurements.\n");
+            continue;
+        }
         double run_avg = run_sum / run_successful_measures;
-	sum_ghz += run_sum;
-	successful_measures += run_successful_measures;
+        sum_ghz += run_sum;
+        successful_measures += run_successful_measures;
         if (verbose) { printf("  -> Multi-Core run #%d average: %.3f GHz\n", r, run_avg); }
     }
 
@@ -317,5 +399,6 @@ int main(int argc, char *argv[]) {
 
     free(threads);
     free(t_data);
+    free(cpu_ids);
     return 0;
 }

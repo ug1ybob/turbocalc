@@ -1,7 +1,9 @@
 #ifndef _BENCHMARK_H
 #define _BENCHMARK_H
 
-extern pthread_barrier_t start_barrier;
+extern _Atomic int ready_workers;
+extern _Atomic int completed_probes;
+extern _Atomic bool benchmark_start_failed;
 
 // Structure passed to each worker thread
 typedef struct {
@@ -12,6 +14,8 @@ typedef struct {
     double    sysfs_ghz;
     char      *load_function;
     bool      is_probe;
+    int       worker_count;
+    int       probe_count;
     pthread_t thread_handle;
 } thread_data_t;
 

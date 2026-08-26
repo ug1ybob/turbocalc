@@ -10,4 +10,6 @@ int check_perf_permissions();
 
 double get_sysfs_cpu_freq_ghz(int cpu_id);
 
+int get_cpu_ids(int **cpu_ids, bool allow_smt);
+
 #endif /* _OS_H */

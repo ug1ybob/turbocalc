@@ -1,5 +1,10 @@
+#define _GNU_SOURCE
+#include <errno.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <linux/perf_event.h>
 #include <sys/syscall.h>
@@ -76,4 +81,69 @@ double get_sysfs_cpu_freq_ghz(int cpu_id) {
     }
     fclose(fp);
     return (double)freq_khz / 1e6; // Convert kHz to GHz
+}
+
+static int read_topology_id(int cpu_id, const char *name, int *value) {
+    char path[160];
+    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/%s", cpu_id, name);
+
+    FILE *fp = fopen(path, "r");
+    if (!fp) return -1;
+    int result = fscanf(fp, "%d", value) == 1 ? 0 : -1;
+    fclose(fp);
+    return result;
+}
+
+int get_cpu_ids(int **cpu_ids, bool allow_smt) {
+    cpu_set_t allowed;
+    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
+        fprintf(stderr, "[X] Could not read process CPU affinity: %s\n", strerror(errno));
+        return -1;
+    }
+
+    int allowed_count = CPU_COUNT(&allowed);
+    if (allowed_count <= 0) return -1;
+    int *selected = malloc((size_t)allowed_count * sizeof(*selected));
+    int *packages = malloc((size_t)allowed_count * sizeof(*packages));
+    int *cores = malloc((size_t)allowed_count * sizeof(*cores));
+    if (!selected || !packages || !cores) {
+        free(selected);
+        free(packages);
+        free(cores);
+        return -1;
+    }
+
+    int count = 0;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+        if (!CPU_ISSET(cpu, &allowed)) continue;
+
+        int package_id;
+        int core_id;
+        bool topology_available = read_topology_id(cpu, "physical_package_id", &package_id) == 0 &&
+                                  read_topology_id(cpu, "core_id", &core_id) == 0;
+        bool duplicate = false;
+        if (!allow_smt && topology_available) {
+            for (int i = 0; i < count; i++) {
+                if (packages[i] == package_id && cores[i] == core_id) {
+                    duplicate = true;
+                    break;
+                }
+            }
+        }
+        if (duplicate) continue;
+
+        selected[count] = cpu;
+        packages[count] = topology_available ? package_id : -1;
+        cores[count] = topology_available ? core_id : cpu;
+        count++;
+    }
+
+    free(packages);
+    free(cores);
+    if (count == 0) {
+        free(selected);
+        return -1;
+    }
+    *cpu_ids = selected;
+    return count;
 }

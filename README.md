@@ -15,6 +15,7 @@ Options:
   -m, --max_tcores       Find the max count of single-core turbo capable cores (basic)
   -M, --max_tcores_full  Find the max count of single-core turbo capable cores (thorough)
   -s, --stress_mcore     Apply a SIMD stress to certain multi-core scenarios to induce throttling
+  -t, --allow-smt        Run on every allowed logical CPU, including SMT siblings
   -v, --verbose          Display more details (only works for txt format)
   -w, --workload         Workload type (default: sisd)
   -h, --help             Display this help message
@@ -23,9 +24,12 @@ Options:
 ## Examples
 
 ```
-docker run --rm --security-opt seccomp=unconfined --cap-add SYS_ADMIN ug1ybob/turbocalc:0.0.7 -f csv >turbo.csv
+docker run --rm --security-opt seccomp=unconfined --cap-add SYS_ADMIN ug1ybob/turbocalc:0.0.8 -f csv >turbo.csv
 ```
 ```
-docker run --rm --security-opt seccomp=unconfined --cap-add SYS_ADMIN ug1ybob/turbocalc:0.0.7 -m -w d_sisd -s
+docker run --rm --security-opt seccomp=unconfined --cap-add SYS_ADMIN ug1ybob/turbocalc:0.0.8 -m -w d_sisd -s
 ```
 
+## Acknowledgements
+
+Portions of this codebase were generated or optimized using GitHub Copilot and Gemini Enterprise

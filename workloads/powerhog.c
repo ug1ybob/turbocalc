@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,37 +17,18 @@
 
 // A Power Hog: Generates massive heat and power draw to force throttling
 power_hog_func_t power_hog = NULL;
-volatile bool stop_hog = false;
+_Atomic bool stop_hog = false;
 
 #if defined(__x86_64__)
 static double *global_power_buffer = NULL;
 static size_t global_buf_size = 4096;
-static volatile int buffer_lock = 0; // Simple spinlock for thread safety
 // Use vfmadd231pd (Fused Multiply-Add for Packed Double-Precision).
 // This lights up the heavy vector ALUs on x86 CPU.
 __attribute__((target("avx512f")))
 void power_hog_avx512(void) {
-    // 1. Thread-safe global memory allocation
-    if (global_power_buffer == NULL) {
-        if (__sync_bool_compare_and_swap(&buffer_lock, 0, 1)) {
-            if (global_power_buffer == NULL) {
-                global_power_buffer = (double *)aligned_alloc(64, global_buf_size);
-                if (global_power_buffer) {
-                    memset(global_power_buffer, 0x3F, global_buf_size);
-                }
-            }
-        } else {
-            while (global_power_buffer == NULL) {
-                __asm__ volatile ("pause" ::: "memory");
-            }
-        }
-    }
-
-    if (!global_power_buffer) while(1) {}
-
     uint32_t loops = 0;
     while (1) {
-        if (stop_hog) {
+        if (atomic_load(&stop_hog)) {
             break;
         }
         // Inner assembly block running 32 back-to-back FMAs per iteration.
@@ -112,11 +94,11 @@ void power_hog_avx512(void) {
     }
 }
 
-__attribute__((target("avx2")))
+__attribute__((target("avx2,fma")))
 void power_hog_avx2(void) {
     uint32_t loops = 0;
     while (1) {
-        if (stop_hog) {
+        if (atomic_load(&stop_hog)) {
             break;
         }
         __asm__ volatile (
@@ -143,7 +125,7 @@ void power_hog_avx2(void) {
 void power_hog_scalar_x86(void) {
     volatile double a = 1.1, b = 2.2;
     while (1) {
-        if (stop_hog) {
+        if (atomic_load(&stop_hog)) {
             break;
         }
         a = a * b + a;
@@ -159,7 +141,7 @@ __attribute__((target("+sve")))
 void power_hog_sve(void) {
     uint32_t loops = 0;
     while (1) {
-        if (stop_hog) {
+        if (atomic_load(&stop_hog)) {
             break;
         }
         __asm__ volatile (
@@ -183,7 +165,7 @@ void power_hog_sve(void) {
 void power_hog_neon(void) {
     uint32_t loops = 0;
     while (1) {
-        if (stop_hog) {
+        if (atomic_load(&stop_hog)) {
             break;
         }
         __asm__ volatile (
@@ -220,7 +202,7 @@ void power_hog_ansi_c(void) {
     // to actually execute the math, preventing Dead-Code Elimination (DCE).
     volatile double power_sink = 0.0;
     while (1) {
-        if (stop_hog) {
+        if (atomic_load(&stop_hog)) {
             break;
         }
         // Use "x = x * 0.999 + 0.001"
@@ -245,9 +227,16 @@ void resolve_power_hog(void) {
 #if defined(__x86_64__)
     // __builtin_cpu_supports queries CPUID at startup efficiently
     if (__builtin_cpu_supports("avx512f")) {
-        if (verbose) { printf("[+] Detected AVX-512. Engaging high-power AVX-512 stress.\n"); }
-        power_hog = power_hog_avx512;
-    } else if (__builtin_cpu_supports("avx2")) {
+        global_power_buffer = (double *)aligned_alloc(64, global_buf_size);
+        if (global_power_buffer) {
+            memset(global_power_buffer, 0x3F, global_buf_size);
+            if (verbose) { printf("[+] Detected AVX-512. Engaging high-power AVX-512 stress.\n"); }
+            power_hog = power_hog_avx512;
+            return;
+        }
+        fprintf(stderr, "[!] Could not allocate AVX-512 stress buffer; using a fallback.\n");
+    }
+    if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
         if (verbose) { printf("[+] Detected AVX2. Engaging AVX2 stress.\n"); }
         power_hog = power_hog_avx2;
     } else {

@@ -7,16 +7,22 @@
 // Workload function lookup table
 const Workload workloads[] = {
     {
-        .name = "sisd",
-        .func = sisd_workload,
-        .description = "SISD workload",
-        .deterministic = false
+        .name = "dscalar_iadd",
+        .func = deterministic_scalar_iadd_workload,
+        .description = "Deterministic scalar_iadd workload",
+        .deterministic = true
     },
     {
         .name = "d_sisd",
         .func = deterministic_sisd_workload,
         .description = "Deterministic SISD workload",
         .deterministic = true
+    },
+    {
+        .name = "sisd",
+        .func = sisd_workload,
+        .description = "SISD workload",
+        .deterministic = false
     },
     {NULL, NULL, NULL, false}
 };

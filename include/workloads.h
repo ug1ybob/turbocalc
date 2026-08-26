@@ -16,7 +16,7 @@ typedef void (*power_hog_func_t)(void);
 
 extern power_hog_func_t power_hog;
 
-extern volatile bool stop_hog;
+extern _Atomic bool stop_hog;
 
 // Various stress functions
 void power_hog_avx512(void);
@@ -41,6 +41,8 @@ bool is_valid_workload(const char *wname);
 bool is_deterministic_workload(const char *wname);
 
 void run_workload(const char *wname, uint64_t iterations);
+
+void deterministic_scalar_iadd_workload(uint64_t total_instructions);
 
 void deterministic_sisd_workload(uint64_t total_instructions);
 
